@@ -1,0 +1,4 @@
+data/
+.env
+gpxtiler/
+gpx-vector-tiles/

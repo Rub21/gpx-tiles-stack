@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPS traces tiles</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<style>
+  html, body, #map { height: 100%; margin: 0; }
+  body { background: #000; font: 13px system-ui, sans-serif; }
+  #panel {
+    position: absolute; top: 10px; left: 10px; z-index: 1;
+    background: #fff; padding: 6px 10px; border-radius: 4px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .3);
+  }
+  #panel label { margin-right: 10px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <label><input type="radio" name="layer" value="png" checked> PNG</label>
+  <label><input type="radio" name="layer" value="vector"> Vector (Tilekiln)</label>
+</div>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script>
+// Viewer for the tiles, over OSM Carto at 20 % opacity: the PNG tiles of
+// gpxtiler (?png=<tile url template>, default port 8080 on this host) or
+// the vector tiles of Tilekiln (?vt=<tilejson url>, default port 8081).
+// The position is kept in the URL hash.
+const params = new URLSearchParams(location.search);
+const host = location.protocol + "//" + location.hostname;
+const tiles = params.get("png") || host + ":8080/lines/{z}/{x}/{y}.png";
+const vectorURL = params.get("vt") || host + ":8081/gps/tilejson.json";
+
+// Color of a direction a (0 = east, counterclockwise, as a turn 0-1), the
+// datamaps formula: r, g, b = sin^2(pi * (-(a + 0.5) + k)) for k = 0, 1/3, 2/3.
+function color(a) {
+  const h = -(a + 0.5);
+  const c = (k) => Math.round(255 * Math.sin(Math.PI * (h + k)) ** 2);
+  return `rgb(${c(0)}, ${c(1 / 3)}, ${c(2 / 3)})`;
+}
+// dir is 0-31 from the traces layer: 0 = east, 8 = north, 16 = west, 24 = south.
+const lineColor = ["match", ["get", "dir"]];
+for (let d = 0; d < 32; d++) lineColor.push(d, color((d + 0.5) / 32));
+lineColor.push("#808080");
+
+const map = new maplibregl.Map({
+  container: "map",
+  hash: true,
+  center: [0, 30],
+  zoom: 3,
+  maxZoom: 20,
+  style: {
+    version: 8,
+    sources: {
+      osm: {
+        type: "raster", tileSize: 256, maxzoom: 19,
+        tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+        attribution: "&copy; OpenStreetMap contributors",
+      },
+      traces: {
+        type: "raster", tileSize: 256, maxzoom: 20,
+        tiles: [tiles],
+        attribution: "GPS traces",
+      },
+      vector: { type: "vector", url: vectorURL },
+    },
+    layers: [
+      { id: "background", type: "background", paint: { "background-color": "#000" } },
+      { id: "osm", type: "raster", source: "osm", paint: { "raster-opacity": 0.2 } },
+      { id: "traces", type: "raster", source: "traces" },
+      {
+        id: "vector", type: "line", source: "vector", "source-layer": "traces",
+        layout: { visibility: "none", "line-cap": "round", "line-join": "round" },
+        paint: {
+          "line-color": lineColor,
+          "line-width": 1.2,
+          // fade 1-10 dims long edges (GPS jumps), like datamaps -g.
+          "line-opacity": ["/", ["get", "fade"], 10],
+        },
+      },
+    ],
+  },
+});
+map.addControl(new maplibregl.NavigationControl(), "top-right");
+
+document.querySelectorAll("input[name=layer]").forEach((el) => el.addEventListener("change", () => {
+  const vector = el.value === "vector";
+  map.setLayoutProperty("traces", "visibility", vector ? "none" : "visible");
+  map.setLayoutProperty("vector", "visibility", vector ? "visible" : "none");
+}));
+</script>
+</body>
+</html>
