@@ -18,7 +18,7 @@ docker compose run --rm convert-2013   # once: make the GPX dump from the 2013 p
 docker compose up -d db
 docker compose run --rm import         # once: load the dump
 docker compose run --rm render-all     # once: low zoom PNG tiles
-docker compose up -d                   # serve, tilekiln, viewer, updates, render
+docker compose up -d                   # serve, tilekiln, viewer, updates, render-expired, render-daily
 docker compose --profile ids up -d     # also update-ids, when the id list exists
 ```
 

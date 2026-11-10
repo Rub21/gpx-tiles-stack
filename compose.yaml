@@ -37,13 +37,13 @@ services:
       retries: 30
 
   # Load the dump once: docker compose run --rm import
-  # -low-zooms: zooms with a simplified copy of the lines (changing it needs
+  # -simplified-zooms: zooms with a simplified copy of the lines (changing it needs
   # a new import). -expire-*: the changed tiles are written to expire files.
   import:
     <<: *gpxtiler
     restart: "no"
     command: ["import",
-              "-low-zooms", "${GPXTILER_LOW_ZOOMS:-5,8,11}",
+              "-simplified-zooms", "${GPXTILER_SIMPLIFIED_ZOOMS:-5,8,11}",
               "-expire-dir", "/data/expire",
               "-expire-min-zoom", "${GPXTILER_EXPIRE_MIN_ZOOM:-0}",
               "-expire-max-zoom", "${GPXTILER_EXPIRE_MAX_ZOOM:-14}",
@@ -62,46 +62,45 @@ services:
     ports:
       - "${GPXTILER_PORT:-8080}:8080"
 
-  # Draw all the tiles up to -pre-zoom in advance, before opening the
+  # Draw all the tiles of PRERENDER_ZOOMS in advance, before opening the
   # server: docker compose run --rm render-all. They are slow to draw.
   render-all:
     <<: *gpxtiler
     restart: "no"
-    command: ["render", "-all",
+    command: ["render",
+              "-zooms", "${GPXTILER_PRERENDER_ZOOMS:-0-9}",
               "-tile-dir", "/data/tiles",
-              "-pre-zoom", "${GPXTILER_PRE_ZOOM:-9}",
               "-colors", "${GPXTILER_COLORS:-64}"]
     profiles: ["import"]
 
-  # Every RENDER_EVERY seconds, apply the expire files: redraw the
-  # pre-rendered tiles from -min-zoom to -pre-zoom, and drop the expired
-  # tiles from the cache (-pre-zoom + 1 to -cache-zoom).
-  render-expire:
+  # Every RENDER_EXPIRED_EVERY seconds, apply the expire files: redraw the
+  # expired tiles of EXPIRED_ZOOMS, remove the expired ones above (up to
+  # CACHE_ZOOM) from disk so serve draws them again.
+  render-expired:
     <<: *gpxtiler
     entrypoint: ["sh", "-c"]
     command:
       - while true; do
-          gpxtiler render
-            -tile-dir /data/tiles
-            -expire-dir /data/expire
-            -min-zoom ${GPXTILER_RENDER_MIN_ZOOM:-6}
-            -pre-zoom ${GPXTILER_PRE_ZOOM:-9}
+          gpxtiler render -expired
+            -zooms ${GPXTILER_EXPIRED_ZOOMS:-6-9}
             -cache-zoom ${GPXTILER_CACHE_ZOOM:-14}
+            -expire-dir /data/expire
+            -tile-dir /data/tiles
             -colors ${GPXTILER_COLORS:-64};
-          sleep ${GPXTILER_RENDER_EVERY:-300};
+          sleep ${GPXTILER_RENDER_EXPIRED_EVERY:-300};
         done
 
-  # Every RENDER_LOW_EVERY seconds, redraw all the tiles up to -pre-zoom,
-  # so deleted traces leave the zooms below RENDER_MIN_ZOOM too.
-  render-low:
+  # Every RENDER_DAILY_EVERY seconds, redraw all the tiles of DAILY_ZOOMS,
+  # the ones render-expired does not touch, so deleted traces leave them too.
+  render-daily:
     <<: *gpxtiler
     entrypoint: ["sh", "-c"]
     command:
       - while true; do
-          sleep ${GPXTILER_RENDER_LOW_EVERY:-86400};
-          gpxtiler render -all
+          sleep ${GPXTILER_RENDER_DAILY_EVERY:-86400};
+          gpxtiler render
+            -zooms ${GPXTILER_DAILY_ZOOMS:-0-5}
             -tile-dir /data/tiles
-            -pre-zoom ${GPXTILER_PRE_ZOOM:-9}
             -colors ${GPXTILER_COLORS:-64};
         done
 
