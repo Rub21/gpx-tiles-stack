@@ -40,13 +40,14 @@ checkout, for development.
 
 The last public GPX dump (https://planet.openstreetmap.org/gps/, 2013) is
 a tar with one file per trace. `tools/convert-2013.py` turns it into the
-planet-dump-ng format that gpxtiler reads, identifiable traces only,
-without storing anything else on disk:
+planet-dump-ng format that gpxtiler reads, identifiable traces only. The
+`convert-2013` service downloads, unpacks and converts it in one stream
+(hours, nothing else is stored) and writes `data/gpx-planet-2013.gpx.bz2`:
 
 ```
-xz -dc gpx-planet-2013-04-09.tar.xz | tools/convert-2013.py | bzip2 > data/gpx-planet-2013.gpx.bz2
+docker compose run --rm convert-2013
 ```
 
-Then set `GPXTILER_DUMP=/data/gpx-planet-2013.gpx.bz2` and run the import.
-`--max-traces N` and `--bbox minlon,minlat,maxlon,maxlat` make a small file
-to try.
+Then set `GPXTILER_DUMP=/data/gpx-planet-2013.gpx.bz2` in `.env` and run
+the import. To try with a small file first, set
+`GPX_2013_ARGS=--max-traces 1000` (or `--bbox minlon,minlat,maxlon,maxlat`).

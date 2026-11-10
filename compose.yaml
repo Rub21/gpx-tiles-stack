@@ -115,6 +115,20 @@ services:
       db:
         condition: service_healthy
 
+  # Make data/gpx-planet-2013.gpx.bz2 from the 2013 dump (hours):
+  #   docker compose run --rm convert-2013
+  # Then set GPXTILER_DUMP=/data/gpx-planet-2013.gpx.bz2 and run import.
+  convert-2013:
+    build: tools
+    image: gpx-tiles-tools
+    command: ["convert-2013.sh"]
+    environment:
+      GPX_2013_SRC: ${GPX_2013_SRC:-https://planet.openstreetmap.org/gps/gpx-planet-2013-04-09.tar.xz}
+      GPX_2013_ARGS: ${GPX_2013_ARGS:-}
+    volumes:
+      - ./data:/data
+    profiles: ["tools"]
+
   # A map to look at both tile sets.
   viewer:
     image: nginx:alpine
