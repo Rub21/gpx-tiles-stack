@@ -1,6 +1,9 @@
 # GPS traces tiles on one server: PostGIS, gpxtiler (import, updates, PNG
 # tiles, render) and Tilekiln (vector tiles). See README.md.
 #
+# Every gpxtiler flag is written in the command of its service. The values
+# come from .env (see .env.example), or the default after ":-".
+#
 # PNG tiles:    http://localhost:${GPXTILER_PORT:-8080}/lines/{z}/{x}/{y}.png
 # Vector tiles: http://localhost:${TILEKILN_PORT:-8081}/gps/tilejson.json
 # Viewer:       http://localhost:${VIEWER_PORT:-8090}/
@@ -11,24 +14,8 @@ x-gpxtiler: &gpxtiler
   restart: unless-stopped
   environment:
     GPXTILER_DB: postgres://gpxtiler:${POSTGRES_PASSWORD:-gpxtiler}@db:5432/gpxtiler
-    GPXTILER_SITE: ${GPXTILER_SITE:-https://www.openstreetmap.org}
-    GPXTILER_EXPIRE_DIR: /data/expire
-    GPXTILER_TILE_DIR: /data/tiles
-    GPXTILER_DUMP: ${GPXTILER_DUMP:-}
-    GPXTILER_IDS: ${GPXTILER_IDS:-}
-    GPXTILER_RSS_EVERY: ${GPXTILER_RSS_EVERY:-300}
-    GPXTILER_IDS_EVERY: ${GPXTILER_IDS_EVERY:-86400}
-    GPXTILER_EXPIRE_MIN_ZOOM: ${GPXTILER_EXPIRE_MIN_ZOOM:-0}
-    GPXTILER_EXPIRE_MAX_ZOOM: ${GPXTILER_EXPIRE_MAX_ZOOM:-14}
-    GPXTILER_COLORS: ${GPXTILER_COLORS:-64}
-    GPXTILER_LOW_ZOOMS: ${GPXTILER_LOW_ZOOMS:-5,8,11}
-    GPXTILER_PRE_ZOOM: ${GPXTILER_PRE_ZOOM:-9}
-    GPXTILER_CACHE_ZOOM: ${GPXTILER_CACHE_ZOOM:-14}
-    GPXTILER_RENDER_EVERY: ${GPXTILER_RENDER_EVERY:-300}
-    GPXTILER_RENDER_MIN_ZOOM: ${GPXTILER_RENDER_MIN_ZOOM:-6}
-    GPXTILER_RENDER_LOW_EVERY: ${GPXTILER_RENDER_LOW_EVERY:-86400}
   volumes:
-    - ./data:/data
+    - ./data:/data   # /data/expire: expire files, /data/tiles: PNG tiles on disk
   depends_on:
     db:
       condition: service_healthy
@@ -50,48 +37,104 @@ services:
       retries: 30
 
   # Load the dump once: docker compose run --rm import
+  # -low-zooms: zooms with a simplified copy of the lines (changing it needs
+  # a new import). -expire-*: the changed tiles are written to expire files.
   import:
     <<: *gpxtiler
     restart: "no"
-    entrypoint: ["sh", "-c", "gpxtiler import \"$$GPXTILER_DUMP\""]
+    command: ["import",
+              "-low-zooms", "${GPXTILER_LOW_ZOOMS:-5,8,11}",
+              "-expire-dir", "/data/expire",
+              "-expire-min-zoom", "${GPXTILER_EXPIRE_MIN_ZOOM:-0}",
+              "-expire-max-zoom", "${GPXTILER_EXPIRE_MAX_ZOOM:-14}",
+              "${GPXTILER_DUMP:-/data/gpx-planet-2013.gpx.bz2}"]
     profiles: ["import"]
 
-  # PNG tiles on /lines/{z}/{x}/{y}.png. Zooms up to PRE_ZOOM come from
-  # /data/tiles (made by render), up to CACHE_ZOOM are cached there.
+  # PNG tiles on /lines/{z}/{x}/{y}.png. A tile is read from /data/tiles,
+  # or drawn and kept there up to -cache-zoom. Above that it is drawn on
+  # every request.
   serve:
     <<: *gpxtiler
-    command: ["serve", "-listen", ":8080"]
+    command: ["serve", "-listen", ":8080",
+              "-tile-dir", "/data/tiles",
+              "-cache-zoom", "${GPXTILER_CACHE_ZOOM:-14}",
+              "-colors", "${GPXTILER_COLORS:-64}"]
     ports:
       - "${GPXTILER_PORT:-8080}:8080"
 
-  # Draw all the low zoom tiles once: docker compose run --rm render-all
+  # Draw all the tiles up to -pre-zoom in advance, before opening the
+  # server: docker compose run --rm render-all. They are slow to draw.
   render-all:
     <<: *gpxtiler
     restart: "no"
-    command: ["render", "-all"]
+    command: ["render", "-all",
+              "-tile-dir", "/data/tiles",
+              "-pre-zoom", "${GPXTILER_PRE_ZOOM:-9}",
+              "-colors", "${GPXTILER_COLORS:-64}"]
     profiles: ["import"]
 
-  # Apply the expire files every few minutes: redraw the pre-rendered tiles
-  # from RENDER_MIN_ZOOM up, and drop the expired tiles from the cache.
+  # Every RENDER_EVERY seconds, apply the expire files: redraw the
+  # pre-rendered tiles from -min-zoom to -pre-zoom, and drop the expired
+  # tiles from the cache (-pre-zoom + 1 to -cache-zoom).
   render-expire:
     <<: *gpxtiler
-    entrypoint: ["sh", "-c", "while true; do gpxtiler render -min-zoom $$GPXTILER_RENDER_MIN_ZOOM; sleep $$GPXTILER_RENDER_EVERY; done"]
+    entrypoint: ["sh", "-c"]
+    command:
+      - while true; do
+          gpxtiler render
+            -tile-dir /data/tiles
+            -expire-dir /data/expire
+            -min-zoom ${GPXTILER_RENDER_MIN_ZOOM:-6}
+            -pre-zoom ${GPXTILER_PRE_ZOOM:-9}
+            -cache-zoom ${GPXTILER_CACHE_ZOOM:-14}
+            -colors ${GPXTILER_COLORS:-64};
+          sleep ${GPXTILER_RENDER_EVERY:-300};
+        done
 
-  # Redraw all the low zoom tiles once a day, so deleted traces leave the
-  # zooms below RENDER_MIN_ZOOM too.
+  # Every RENDER_LOW_EVERY seconds, redraw all the tiles up to -pre-zoom,
+  # so deleted traces leave the zooms below RENDER_MIN_ZOOM too.
   render-low:
     <<: *gpxtiler
-    entrypoint: ["sh", "-c", "while true; do sleep $$GPXTILER_RENDER_LOW_EVERY; gpxtiler render -all; done"]
+    entrypoint: ["sh", "-c"]
+    command:
+      - while true; do
+          sleep ${GPXTILER_RENDER_LOW_EVERY:-86400};
+          gpxtiler render -all
+            -tile-dir /data/tiles
+            -pre-zoom ${GPXTILER_PRE_ZOOM:-9}
+            -colors ${GPXTILER_COLORS:-64};
+        done
 
-  # New traces from the RSS feed, every few minutes.
+  # Every RSS_EVERY seconds, load the new traces from the RSS feed of
+  # -site (the website, with /traces/rss).
   update-rss:
     <<: *gpxtiler
-    entrypoint: ["sh", "-c", "while true; do gpxtiler update -rss; sleep $$GPXTILER_RSS_EVERY; done"]
+    entrypoint: ["sh", "-c"]
+    command:
+      - while true; do
+          gpxtiler update -rss
+            -site ${GPXTILER_SITE:-https://www.openstreetmap.org}
+            -expire-dir /data/expire
+            -expire-min-zoom ${GPXTILER_EXPIRE_MIN_ZOOM:-0}
+            -expire-max-zoom ${GPXTILER_EXPIRE_MAX_ZOOM:-14};
+          sleep ${GPXTILER_RSS_EVERY:-300};
+        done
 
-  # Deleted traces from the id list, once a day. Needs GPXTILER_IDS.
+  # Every IDS_EVERY seconds, sync with the daily list of identifiable trace
+  # ids: delete the traces not in it, download the missing ones. Needs
+  # GPXTILER_IDS: docker compose --profile ids up -d
   update-ids:
     <<: *gpxtiler
-    entrypoint: ["sh", "-c", "while true; do gpxtiler update -ids \"$$GPXTILER_IDS\"; sleep $$GPXTILER_IDS_EVERY; done"]
+    entrypoint: ["sh", "-c"]
+    command:
+      - while true; do
+          gpxtiler update -ids "${GPXTILER_IDS:-}"
+            -site ${GPXTILER_SITE:-https://www.openstreetmap.org}
+            -expire-dir /data/expire
+            -expire-min-zoom ${GPXTILER_EXPIRE_MIN_ZOOM:-0}
+            -expire-max-zoom ${GPXTILER_EXPIRE_MAX_ZOOM:-14};
+          sleep ${GPXTILER_IDS_EVERY:-86400};
+        done
     profiles: ["ids"]
 
   # Vector tiles (MVT) with Tilekiln, drawn on the fly from the same tables
@@ -117,14 +160,13 @@ services:
 
   # Make data/gpx-planet-2013.gpx.bz2 from the 2013 dump (hours):
   #   docker compose run --rm convert-2013
-  # Then set GPXTILER_DUMP=/data/gpx-planet-2013.gpx.bz2 and run import.
+  # Then run import: it reads that file by default.
   convert-2013:
     build: tools
     image: gpx-tiles-tools
     command: ["convert-2013.sh"]
     environment:
       GPX_2013_SRC: ${GPX_2013_SRC:-https://planet.openstreetmap.org/gps/gpx-planet-2013-04-09.tar.xz}
-      GPX_2013_ARGS: ${GPX_2013_ARGS:-}
     volumes:
       - ./data:/data
     profiles: ["tools"]

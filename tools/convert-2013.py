@@ -17,20 +17,12 @@ The 2013 dump has no upload file name, so <name> is the name of the file
 in the tar.
 """
 
-import argparse
 import sys
 import tarfile
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
 
 GPX_NS = "{http://www.topografix.com/GPX/1/0}"
-
-
-def parse_args():
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--max-traces", type=int, default=0, help="stop after this many traces (0 = all)")
-    p.add_argument("--bbox", help="only traces whose first point is in minlon,minlat,maxlon,maxlat")
-    return p.parse_args()
 
 
 def read_metadata(f):
@@ -62,13 +54,6 @@ def read_points(f):
     return [s for s in segs if s]
 
 
-def in_bbox(bbox, segs):
-    if not bbox:
-        return True
-    lat, lon = float(segs[0][0][0]), float(segs[0][0][1])
-    return bbox[0] <= lon <= bbox[2] and bbox[1] <= lat <= bbox[3]
-
-
 def write_trace(out, gpx_id, name, desc, tags, segs):
     out.write(" <trk>\n")
     out.write("  <name>%s</name>\n" % escape(name))
@@ -88,8 +73,6 @@ def write_trace(out, gpx_id, name, desc, tags, segs):
 
 
 def main():
-    args = parse_args()
-    bbox = [float(v) for v in args.bbox.split(",")] if args.bbox else None
     out = sys.stdout
     tar = tarfile.open(fileobj=sys.stdin.buffer, mode="r|")
     traces = None
@@ -118,7 +101,7 @@ def main():
             skipped += 1
             continue
         segs = read_points(tar.extractfile(member))
-        if not segs or not in_bbox(bbox, segs):
+        if not segs:
             skipped += 1
             continue
         desc, tags = traces[gpx_id]
@@ -126,8 +109,6 @@ def main():
         written += 1
         if written % 1000 == 0:
             print("%d traces written" % written, file=sys.stderr)
-        if args.max_traces and written >= args.max_traces:
-            break
     out.write("</gpx>\n")
     print("done: %d traces written, %d skipped" % (written, skipped), file=sys.stderr)
 
