@@ -35,3 +35,18 @@ then `docker compose up -d --build`.
 
 `GPXTILER_SRC` and `GPX_VECTOR_TILES_SRC` in `.env` can point to any
 checkout, for development.
+
+## The 2013 dump
+
+The last public GPX dump (https://planet.openstreetmap.org/gps/, 2013) is
+a tar with one file per trace. `tools/convert-2013.py` turns it into the
+planet-dump-ng format that gpxtiler reads, identifiable traces only,
+without storing anything else on disk:
+
+```
+xz -dc gpx-planet-2013-04-09.tar.xz | tools/convert-2013.py | bzip2 > data/gpx-planet-2013.gpx.bz2
+```
+
+Then set `GPXTILER_DUMP=/data/gpx-planet-2013.gpx.bz2` and run the import.
+`--max-traces N` and `--bbox minlon,minlat,maxlon,maxlat` make a small file
+to try.
