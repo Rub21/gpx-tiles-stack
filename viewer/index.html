@@ -25,13 +25,15 @@
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script>
 // Viewer for the tiles, over OSM Carto at 20 % opacity: the PNG tiles of
-// gpxtiler (?png=<tile url template>, default port 8080 on this host) or
-// the vector tiles of Tilekiln (?vt=<tilejson url>, default port 8081).
-// The position is kept in the URL hash.
+// gpxtiler (?png=<tile url template>) or the vector tiles of Tilekiln
+// (?vt=<tilejson url>). By default, behind Traefik, /lines/ and /gps/ on
+// this origin; on the dev ports, 8080 and 8081 on this host. The position
+// is kept in the URL hash.
 const params = new URLSearchParams(location.search);
+const dev = location.port === "8090";
 const host = location.protocol + "//" + location.hostname;
-const tiles = params.get("png") || host + ":8080/lines/{z}/{x}/{y}.png";
-const vectorURL = params.get("vt") || host + ":8081/gps/tilejson.json";
+const tiles = params.get("png") || (dev ? host + ":8080" : location.origin) + "/lines/{z}/{x}/{y}.png";
+const vectorURL = params.get("vt") || (dev ? host + ":8081" : location.origin) + "/gps/tilejson.json";
 
 // Color of a direction a (0 = east, counterclockwise, as a turn 0-1), the
 // datamaps formula: r, g, b = sin^2(pi * (-(a + 0.5) + k)) for k = 0, 1/3, 2/3.

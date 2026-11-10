@@ -61,6 +61,12 @@ services:
               "-colors", "${GPXTILER_COLORS:-64}"]
     ports:
       - "${GPXTILER_PORT:-8080}:8080"
+    labels:
+      traefik.enable: true
+      traefik.http.routers.lines.rule: Host(`${GPX_TILES_HOST:-localhost}`) && PathPrefix(`/lines/`)
+      traefik.http.routers.lines.entrypoints: websecure
+      traefik.http.routers.lines.tls.certresolver: letsencrypt
+      traefik.http.services.lines.loadbalancer.server.port: 8080
 
   # Draw all the tiles of PRERENDER_ZOOMS in advance, before opening the
   # server: docker compose run --rm render-all. They are slow to draw.
@@ -148,13 +154,22 @@ services:
     command: ["serve", "dev", "--config", "/config/config.yaml",
               "--bind-host", "0.0.0.0", "--bind-port", "8000",
               "--source-host", "db", "--source-dbname", "gpxtiler", "--source-username", "gpxtiler",
-              "--base-url", "http://localhost:${TILEKILN_PORT:-8081}"]
+              "--base-url", "${GPX_TILES_URL:-http://localhost:${TILEKILN_PORT:-8081}}"]
     environment:
       PGPASSWORD: ${POSTGRES_PASSWORD:-gpxtiler}
     volumes:
       - ${GPX_VECTOR_TILES_SRC:-./gpx-vector-tiles}:/config:ro
     ports:
       - "${TILEKILN_PORT:-8081}:8000"
+    labels:
+      traefik.enable: true
+      traefik.http.routers.gps.rule: Host(`${GPX_TILES_HOST:-localhost}`) && PathPrefix(`/gps/`)
+      traefik.http.routers.gps.entrypoints: websecure
+      traefik.http.routers.gps.tls.certresolver: letsencrypt
+      traefik.http.routers.gps.middlewares: compress
+      traefik.http.services.gps.loadbalancer.server.port: 8000
+      # Vector tiles are not compressed by Tilekiln; Traefik does it (gzip, br).
+      traefik.http.middlewares.compress.compress: true
     depends_on:
       db:
         condition: service_healthy
@@ -180,6 +195,37 @@ services:
       - ./viewer:/usr/share/nginx/html:ro
     ports:
       - "${VIEWER_PORT:-8090}:80"
+    labels:
+      traefik.enable: true
+      traefik.http.routers.viewer.rule: Host(`${GPX_TILES_HOST:-localhost}`)
+      traefik.http.routers.viewer.entrypoints: websecure
+      traefik.http.routers.viewer.tls.certresolver: letsencrypt
+      traefik.http.services.viewer.loadbalancer.server.port: 80
+
+  # On a server with a domain: HTTPS in front of the viewer, the PNG tiles
+  # (/lines/) and the vector tiles (/gps/), with a Let's Encrypt certificate.
+  #   docker compose --profile web up -d
+  traefik:
+    image: traefik:v3.6
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.web.http.redirections.entrypoint.to=websecure
+      - --entrypoints.web.http.redirections.entrypoint.scheme=https
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:-}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock:ro
+      - letsencrypt:/letsencrypt
+    profiles: ["web"]
 
 volumes:
   db-data:
+  letsencrypt:

@@ -28,6 +28,8 @@ docker compose --profile ids up -d     # also update-ids, when the id list exist
 | `http://localhost:8080/lines/{z}/{x}/{y}.png` | PNG tiles |
 | `http://localhost:8081/gps/tilejson.json` | vector tiles |
 
+With a domain pointing to the server, Traefik serves everything on it with HTTPS: the viewer on `/`, the PNG tiles on `/lines/`, the vector tiles on `/gps/` (compressed). Set `GPX_TILES_HOST`, `GPX_TILES_URL` and `ACME_EMAIL` in `.env` and run `docker compose --profile web up -d`.
+
 Data (database, tiles, expire files) stays in `./data` and the `db-data` volume. To update the code: `git pull` in `gpxtiler` or `gpx-vector-tiles`, then `docker compose up -d --build`.
 
 `GPXTILER_SRC` and `GPX_VECTOR_TILES_SRC` in `.env` can point to any checkout, for development.
