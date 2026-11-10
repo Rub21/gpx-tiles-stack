@@ -105,7 +105,8 @@ services:
         done
 
   # Every RSS_EVERY seconds, load the new traces from the RSS feed of
-  # -site (the website, with /traces/rss).
+  # -site (the website, with /traces/rss). -start-id: where the first run
+  # starts (see .env.example).
   update-rss:
     <<: *gpxtiler
     entrypoint: ["sh", "-c"]
@@ -113,6 +114,7 @@ services:
       - while true; do
           gpxtiler update -rss
             -site ${GPXTILER_SITE:-https://www.openstreetmap.org}
+            -start-id "${GPXTILER_RSS_START_ID:-}"
             -expire-dir /data/expire
             -expire-min-zoom ${GPXTILER_EXPIRE_MIN_ZOOM:-0}
             -expire-max-zoom ${GPXTILER_EXPIRE_MAX_ZOOM:-14};
