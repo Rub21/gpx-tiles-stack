@@ -18,9 +18,13 @@ docker compose run --rm convert-2013   # once: make the GPX dump from the 2013 p
 docker compose up -d db
 docker compose run --rm import         # once: load the dump
 docker compose run --rm render-all     # once: low zoom PNG tiles
-docker compose up -d                   # serve, tilekiln, viewer, updates, render-expired, render-daily
+docker compose run --rm tilekiln-init  # once: the vector tile storage in the database
+docker compose run --rm tilekiln-zooms # once: low zoom vector tiles
+docker compose up -d                   # serve, tilekiln, viewer, updates, the expired and daily renders
 docker compose --profile ids up -d     # also update-ids, when the id list exists
 ```
+
+The PNG tiles and the vector tiles follow the same plan, like ops does on vector.openstreetmap.org: the low zooms are drawn in advance (`render-all`, `tilekiln-zooms`), the other zooms on the first request and kept (on disk for PNG, in the database for Tilekiln), the expire files written by import and update are applied every few minutes (`render-expired`, `tilekiln-expired`) and the lowest zooms are drawn again once a day (`render-daily`, `tilekiln-daily`).
 
 | URL | What |
 |---|---|

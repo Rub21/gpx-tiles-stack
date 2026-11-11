@@ -15,7 +15,27 @@ x-gpxtiler: &gpxtiler
   environment:
     GPXTILER_DB: postgres://gpxtiler:${POSTGRES_PASSWORD:-gpxtiler}@db:5432/gpxtiler
   volumes:
-    - ./data:/data   # /data/expire: expire files, /data/tiles: PNG tiles on disk
+    - ./data:/data   # /data/expire/png and /vector: expire files, /data/tiles: PNG tiles
+  depends_on:
+    db:
+      condition: service_healthy
+
+x-tilekiln-env: &tilekiln-env
+  # The user goes in PGUSER: "serve live" breaks with --storage-username
+  # (Tilekiln 0.8.4 passes it to psycopg as "username").
+  PGUSER: gpxtiler
+  PGPASSWORD: ${POSTGRES_PASSWORD:-gpxtiler}
+  # STORE: where the tiles are kept. SRC: where the lines are read from.
+  STORE: --config /config/config.yaml --storage-host db --storage-dbname gpxtiler
+  SRC: --source-host db --source-dbname gpxtiler
+x-tilekiln: &tilekiln
+  build: tilekiln
+  image: gpx-tiles-tilekiln
+  restart: unless-stopped
+  environment: *tilekiln-env
+  volumes:
+    - ${GPX_VECTOR_TILES_SRC:-./gpx-vector-tiles}:/config:ro
+    - ./data:/data
   depends_on:
     db:
       condition: service_healthy
@@ -38,13 +58,14 @@ services:
 
   # Load the dump once: docker compose run --rm import
   # -simplified-zooms: zooms with a simplified copy of the lines (changing it needs
-  # a new import). -expire-*: the changed tiles are written to expire files.
+  # a new import). -expire-*: the changed tiles are written to expire files,
+  # the same file in two folders: one for render-expired, one for tilekiln-expired.
   import:
     <<: *gpxtiler
     restart: "no"
     command: ["import",
               "-simplified-zooms", "${GPXTILER_SIMPLIFIED_ZOOMS:-5,8,11}",
-              "-expire-dir", "/data/expire",
+              "-expire-dir", "/data/expire/png,/data/expire/vector",
               "-expire-min-zoom", "${GPXTILER_EXPIRE_MIN_ZOOM:-0}",
               "-expire-max-zoom", "${GPXTILER_EXPIRE_MAX_ZOOM:-14}",
               "${GPXTILER_DUMP:-/data/gpx-planet-2013.gpx.bz2}"]
@@ -90,7 +111,7 @@ services:
           gpxtiler render -expired
             -zooms ${GPXTILER_EXPIRED_ZOOMS:-6-9}
             -cache-zoom ${GPXTILER_CACHE_ZOOM:-14}
-            -expire-dir /data/expire
+            -expire-dir /data/expire/png
             -tile-dir /data/tiles
             -colors ${GPXTILER_COLORS:-64};
           sleep ${GPXTILER_RENDER_EXPIRED_EVERY:-300};
@@ -121,7 +142,7 @@ services:
           gpxtiler update -rss
             -site ${GPXTILER_SITE:-https://www.openstreetmap.org}
             -start-id "${GPXTILER_RSS_START_ID:-}"
-            -expire-dir /data/expire
+            -expire-dir /data/expire/png,/data/expire/vector
             -expire-min-zoom ${GPXTILER_EXPIRE_MIN_ZOOM:-0}
             -expire-max-zoom ${GPXTILER_EXPIRE_MAX_ZOOM:-14};
           sleep ${GPXTILER_RSS_EVERY:-300};
@@ -137,28 +158,38 @@ services:
       - while true; do
           gpxtiler update -ids "${GPXTILER_IDS:-}"
             -site ${GPXTILER_SITE:-https://www.openstreetmap.org}
-            -expire-dir /data/expire
+            -expire-dir /data/expire/png,/data/expire/vector
             -expire-min-zoom ${GPXTILER_EXPIRE_MIN_ZOOM:-0}
             -expire-max-zoom ${GPXTILER_EXPIRE_MAX_ZOOM:-14};
           sleep ${GPXTILER_IDS_EVERY:-86400};
         done
     profiles: ["ids"]
 
-  # Vector tiles (MVT) with Tilekiln, drawn on the fly from the same tables
-  # with the config of gpx-vector-tiles. "serve dev" has no tile storage;
-  # it is enough to try the tiles.
+  # Vector tiles (MVT) with Tilekiln and the config of gpx-vector-tiles,
+  # the same way ops runs it on vector.openstreetmap.org: the tiles are
+  # kept in the database (schema tilekiln), "serve live" reads them and
+  # draws the missing ones. Common flags:
+  # Create the tile storage once: docker compose run --rm tilekiln-init
+  tilekiln-init:
+    <<: *tilekiln
+    restart: "no"
+    entrypoint: ["sh", "-c"]
+    command: ["tilekiln storage init $$STORE"]
+    profiles: ["import"]
+
+  # Draw all the vector tiles of TILEKILN_PRERENDER_ZOOMS in advance:
+  # docker compose run --rm tilekiln-zooms
+  tilekiln-zooms:
+    <<: *tilekiln
+    restart: "no"
+    entrypoint: ["sh", "-c"]
+    command: ["tilekiln generate zooms $$STORE $$SRC --num-threads ${TILEKILN_THREADS:-2} --min-zoom ${TILEKILN_PRERENDER_ZOOMS_MIN:-0} --max-zoom ${TILEKILN_PRERENDER_ZOOMS_MAX:-9}"]
+    profiles: ["import"]
+
   tilekiln:
-    build: tilekiln
-    image: gpx-tiles-tilekiln
-    restart: unless-stopped
-    command: ["serve", "dev", "--config", "/config/config.yaml",
-              "--bind-host", "0.0.0.0", "--bind-port", "8000",
-              "--source-host", "db", "--source-dbname", "gpxtiler", "--source-username", "gpxtiler",
-              "--base-url", "${GPX_TILES_URL:-http://localhost:${TILEKILN_PORT:-8081}}"]
-    environment:
-      PGPASSWORD: ${POSTGRES_PASSWORD:-gpxtiler}
-    volumes:
-      - ${GPX_VECTOR_TILES_SRC:-./gpx-vector-tiles}:/config:ro
+    <<: *tilekiln
+    entrypoint: ["sh", "-c"]
+    command: ["tilekiln serve live $$STORE $$SRC --bind-host 0.0.0.0 --bind-port 8000 --num-threads ${TILEKILN_THREADS:-2} --base-url ${GPX_TILES_URL:-http://localhost:${TILEKILN_PORT:-8081}}"]
     ports:
       - "${TILEKILN_PORT:-8081}:8000"
     labels:
@@ -170,9 +201,41 @@ services:
       traefik.http.services.gps.loadbalancer.server.port: 8000
       # Vector tiles are not compressed by Tilekiln; Traefik does it (gzip, br).
       traefik.http.middlewares.compress.compress: true
-    depends_on:
-      db:
-        condition: service_healthy
+
+  # Every RENDER_EXPIRED_EVERY seconds, apply the expire files to the
+  # stored vector tiles: draw again the ones of TILEKILN_EXPIRED_ZOOMS,
+  # delete the ones above (serve live draws them on the next request).
+  tilekiln-expired:
+    <<: *tilekiln
+    entrypoint: ["sh", "-c"]
+    command:
+      - while true; do
+          for f in /data/expire/vector/expire-*.txt; do
+            [ -e "$$f" ] || continue;
+            awk -F/ -v lo=${TILEKILN_EXPIRED_ZOOMS_MIN:-6} -v hi=${TILEKILN_EXPIRED_ZOOMS_MAX:-9} '$$1 >= lo && $$1 <= hi' "$$f"
+              | tilekiln generate tiles $$STORE $$SRC --num-threads ${TILEKILN_THREADS:-2} --no-progress;
+            awk -F/ -v hi=${TILEKILN_EXPIRED_ZOOMS_MAX:-9} '$$1 > hi' "$$f"
+              | tilekiln storage tiledelete $$STORE;
+            rm -f "$$f";
+          done;
+          sleep ${GPXTILER_RENDER_EXPIRED_EVERY:-300};
+        done
+
+  # Every RENDER_DAILY_EVERY seconds, draw again all the vector tiles of
+  # TILEKILN_DAILY_ZOOMS, the ones tilekiln-expired does not touch, and
+  # drop the stored tiles above EXPIRE_MAX_ZOOM: serve live keeps every
+  # tile it draws, and the expire files do not list those zooms.
+  tilekiln-daily:
+    <<: *tilekiln
+    entrypoint: ["sh", "-c"]
+    command:
+      - while true; do
+          sleep ${GPXTILER_RENDER_DAILY_EVERY:-86400};
+          tilekiln generate zooms $$STORE $$SRC --num-threads ${TILEKILN_THREADS:-2}
+            --min-zoom ${TILEKILN_DAILY_ZOOMS_MIN:-0} --max-zoom ${TILEKILN_DAILY_ZOOMS_MAX:-5};
+          z=$$(( ${GPXTILER_EXPIRE_MAX_ZOOM:-14} + 1 ));
+          while [ $$z -le 20 ]; do tilekiln storage delete $$STORE -z $$z; z=$$(( z + 1 )); done;
+        done
 
   # Make data/gpx-planet-2013.gpx.bz2 from the 2013 dump (hours):
   #   docker compose run --rm convert-2013
