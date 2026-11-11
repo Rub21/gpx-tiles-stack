@@ -57,14 +57,14 @@ services:
       retries: 30
 
   # Load the dump once: docker compose run --rm import
-  # -simplified-zooms: zooms with a simplified copy of the lines (changing it needs
-  # a new import). -expire-*: the changed tiles are written to expire files,
+  # -grid-zooms: zooms with a grid table of the lines (changing it needs a
+  # new import). -expire-*: the changed tiles are written to expire files,
   # the same file in two folders: one for render-expired, one for tilekiln-expired.
   import:
     <<: *gpxtiler
     restart: "no"
     command: ["import",
-              "-simplified-zooms", "${GPXTILER_SIMPLIFIED_ZOOMS:-5,8,11}",
+              "-grid-zooms", "${GPXTILER_GRID_ZOOMS:-5,8,11,14}",
               "-expire-dir", "/data/expire/png,/data/expire/vector",
               "-expire-min-zoom", "${GPXTILER_EXPIRE_MIN_ZOOM:-0}",
               "-expire-max-zoom", "${GPXTILER_EXPIRE_MAX_ZOOM:-14}",
