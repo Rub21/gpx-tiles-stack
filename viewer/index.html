@@ -134,7 +134,9 @@ function boundsOf(geometry) {
 
 async function showTrace(id) {
   traceInfo.textContent = "…";
-  const osm = `<a href="https://www.openstreetmap.org/traces/${id}" target="_blank">osm.org/traces/${id}</a>`;
+  // osm.org has no trace page by id alone (it needs the user name), so link
+  // the GPX download and iD with the trace loaded (iD asks to log in).
+  const osm = `<a href="https://www.openstreetmap.org/traces/${id}/data" target="_blank">GPX</a> · <a href="https://www.openstreetmap.org/edit?gpx=${id}" target="_blank">open in iD</a>`;
   let r;
   try {
     r = await fetch(new URL(`traces/${id}`, tiles.replace("lines/{z}/{x}/{y}.png", "")));
