@@ -44,6 +44,34 @@ services:
   db:
     image: postgis/postgis:17-3.5
     restart: unless-stopped
+    # Tuned for a server with 4 cores, 8 GB of RAM and SSD, shared with
+    # gpxtiler and Tilekiln. The defaults are for 1 GB of RAM. The import
+    # writes a lot: a big max_wal_size avoids a checkpoint every few seconds.
+    # synchronous_commit=off can lose the last second of writes on a crash,
+    # never corrupt the data; import and update run again without harm.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-2GB}
+      - -c
+      - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-5GB}
+      - -c
+      - maintenance_work_mem=512MB
+      - -c
+      - work_mem=32MB
+      - -c
+      - max_wal_size=8GB
+      - -c
+      - checkpoint_timeout=15min
+      - -c
+      - wal_compression=on
+      - -c
+      - synchronous_commit=off
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+    shm_size: 1g
     environment:
       POSTGRES_USER: gpxtiler
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gpxtiler}
