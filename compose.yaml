@@ -84,7 +84,8 @@ services:
       - "${GPXTILER_PORT:-8080}:8080"
     labels:
       traefik.enable: true
-      traefik.http.routers.lines.rule: Host(`${GPX_TILES_HOST:-localhost}`) && PathPrefix(`/lines/`)
+      # PNG tiles and /traces/{id} (the lines of a trace, for the viewer).
+      traefik.http.routers.lines.rule: Host(`${GPX_TILES_HOST:-localhost}`) && (PathPrefix(`/lines/`) || PathPrefix(`/traces/`))
       traefik.http.routers.lines.entrypoints: websecure
       traefik.http.routers.lines.tls.certresolver: letsencrypt
       traefik.http.services.lines.loadbalancer.server.port: 8080
