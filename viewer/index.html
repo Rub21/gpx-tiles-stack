@@ -30,6 +30,7 @@
   <form id="trace-form" title="Draw the lines gpxtiler loaded for a trace over the tiles">
     <label>Trace id <input id="trace-id" type="number" min="1" placeholder="12504140"></label>
     <button type="submit">Show</button>
+    <label><input type="checkbox" id="trace-line" checked> line</label>
     <div id="trace-info"></div>
   </form>
 </div>
@@ -162,6 +163,12 @@ async function showTrace(id) {
   traceInfo.innerHTML = `${id}${name}: loaded, ${p.segments} segments, ${p.points} points (white line) · ${osm}`;
 }
 const findTrace = showTrace;
+// Hide the white line to compare with the tiles below it.
+document.getElementById("trace-line").addEventListener("change", (e) => {
+  for (const l of ["trace-gpx-halo", "trace-gpx"]) {
+    map.setLayoutProperty(l, "visibility", e.target.checked ? "visible" : "none");
+  }
+});
 document.getElementById("trace-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const id = traceInput.value;
