@@ -34,7 +34,7 @@ The PNG tiles and the vector tiles follow the same plan, like ops does on vector
 
 With a domain pointing to the server, Traefik serves everything on it with HTTPS: the viewer on `/`, the PNG tiles on `/lines/`, the vector tiles on `/gps/` (compressed). Set `GPX_TILES_HOST`, `GPX_TILES_URL` and `ACME_EMAIL` in `.env` and run `docker compose --profile web up -d`.
 
-Data (database, tiles, expire files) stays in `./data` and the `db-data` volume. To update the code: `git pull` in `gpxtiler` or `gpx-vector-tiles`, then `docker compose up -d --build`.
+Data (database, tiles, expire files) stays in `./data` and the `db-data` volume. To update the code: `git pull` in `gpxtiler` or `gpx-vector-tiles`, then `docker compose up -d --build`. Name the services when a long job (`import`, `render-all`, `tilekiln-zooms`) is running, for example `docker compose up -d --build serve tilekiln`: without names, `db` is recreated too and the job loses its connection.
 
 `GPXTILER_SRC` and `GPX_VECTOR_TILES_SRC` in `.env` can point to any checkout, for development.
 

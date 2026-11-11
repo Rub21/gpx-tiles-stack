@@ -15,6 +15,10 @@
   }
   #panel label { margin-right: 10px; }
   #panel a { color: #06c; }
+  #panel form { margin-top: 6px; }
+  #panel input[type=number] { width: 110px; }
+  #trace-info { margin-top: 4px; color: #333; }
+  #trace-info .no { color: #a00; }
 </style>
 </head>
 <body>
@@ -23,6 +27,11 @@
   <label><input type="radio" name="layer" value="png" checked> PNG</label>
   <label><input type="radio" name="layer" value="vector"> Vector (Tilekiln)</label>
   <a href="compare.html">Compare with gps-tile.openstreetmap.org</a>
+  <form id="trace-form" title="Draw the lines gpxtiler loaded for a trace over the tiles">
+    <label>Trace id <input id="trace-id" type="number" min="1" placeholder="12504140"></label>
+    <button type="submit">Show</button>
+    <div id="trace-info"></div>
+  </form>
 </div>
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script>
@@ -94,6 +103,77 @@ document.querySelectorAll("input[name=layer]").forEach((el) => el.addEventListen
   map.setLayoutProperty("traces", "visibility", vector ? "none" : "visible");
   map.setLayoutProperty("vector", "visibility", vector ? "visible" : "none");
 }));
+
+// Show a trace: /traces/{id} of gpxtiler returns the lines it loaded as
+// GeoJSON; they are drawn in white over the tiles, so you can check that
+// the tiles have them too. 404: the trace is not in the database.
+const traceInfo = document.getElementById("trace-info");
+const traceInput = document.getElementById("trace-id");
+const empty = { type: "FeatureCollection", features: [] };
+map.on("load", () => {
+  map.addSource("trace-gpx", { type: "geojson", data: empty });
+  map.addLayer({
+    id: "trace-gpx-halo", type: "line", source: "trace-gpx",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": "#000", "line-width": 5, "line-opacity": 0.6 },
+  });
+  map.addLayer({
+    id: "trace-gpx", type: "line", source: "trace-gpx",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": "#fff", "line-width": 2 },
+  });
+});
+
+function boundsOf(geometry) {
+  let b = null;
+  for (const part of geometry.coordinates) {
+    for (const c of part) b = b ? b.extend(c) : new maplibregl.LngLatBounds(c, c);
+  }
+  return b;
+}
+
+async function showTrace(id) {
+  traceInfo.textContent = "…";
+  const osm = `<a href="https://www.openstreetmap.org/traces/${id}" target="_blank">osm.org/traces/${id}</a>`;
+  let r;
+  try {
+    r = await fetch(new URL(`traces/${id}`, tiles.replace("lines/{z}/{x}/{y}.png", "")));
+  } catch (e) {
+    traceInfo.innerHTML = `<span class="no">tile server not reachable</span>`;
+    return;
+  }
+  if (r.status === 404) {
+    map.getSource("trace-gpx").setData(empty);
+    traceInfo.innerHTML = `<span class="no">${id}: not loaded</span> · ${osm}`;
+    return;
+  }
+  const f = await r.json();
+  const p = f.properties;
+  const name = p.name ? ` · ${p.name}` : "";
+  if (!f.geometry) {
+    map.getSource("trace-gpx").setData(empty);
+    traceInfo.innerHTML = `${id}${name}: loaded, no lines (one point?) · ${osm}`;
+    return;
+  }
+  map.getSource("trace-gpx").setData(f);
+  map.fitBounds(boundsOf(f.geometry), { padding: 60, maxZoom: 16, duration: 800 });
+  traceInfo.innerHTML = `${id}${name}: loaded, ${p.segments} segments, ${p.points} points (white line) · ${osm}`;
+}
+const findTrace = showTrace;
+document.getElementById("trace-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const id = traceInput.value;
+  if (!id) return;
+  const url = new URL(location.href);
+  url.searchParams.set("trace", id);
+  history.replaceState(null, "", url);
+  findTrace(id);
+});
+const wanted = new URLSearchParams(location.search).get("trace");
+if (wanted) {
+  traceInput.value = wanted;
+  map.once("load", () => findTrace(wanted));
+}
 </script>
 </body>
 </html>
