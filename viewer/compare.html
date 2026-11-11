@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GPS tiles compare</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+      html, body { height: 100%; margin: 0; font: 13px/1.5 sans-serif; }
+      body { display: flex; flex-direction: column; }
+      #bar {
+        display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center;
+        padding: 6px 10px; background: #f4f4f4; border-bottom: 1px solid #ccc;
+      }
+      #bar input[type=text] { width: 330px; }
+      #maps { flex: 1; display: flex; min-height: 0; }
+      .side { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+      .side + .side { border-left: 2px solid #333; }
+      .map { flex: 1; background: #000; }
+      .stats { padding: 6px 10px; background: #fff; border-top: 1px solid #ccc; }
+      .stats table { border-collapse: collapse; width: 100%; }
+      .stats td { padding: 1px 6px; }
+      .stats td:nth-child(2) { text-align: right; font-variant-numeric: tabular-nums; }
+      .stats h3 { margin: 0 0 4px; font-size: 13px; }
+      .win { color: #080; font-weight: bold; }
+      #bar a { margin-left: auto; }
+      .tile { position: relative; }
+      .tile img { position: absolute; left: 0; top: 0; }
+      .tile .label {
+        position: absolute; left: 0; top: 0; padding: 1px 4px;
+        font: 10px/1.3 monospace; color: #fff; background: rgba(0, 0, 0, .55);
+        pointer-events: none; white-space: nowrap;
+      }
+      .tile .slow { background: rgba(160, 0, 0, .7); }
+      .grid .tile { outline: 1px solid rgba(255, 255, 255, .25); outline-offset: -1px; }
+    </style>
+  </head>
+  <body>
+    <div id="bar">
+      <label>Left <input id="left-url" type="text" value="https://gps-tile.openstreetmap.org/lines/{z}/{x}/{y}.png" /></label>
+      <label>Right <input id="right-url" type="text" value="" /></label>
+      <label title="Add a random query string, so the CDN and the browser do not serve a cached tile">
+        <input id="nocache" type="checkbox" checked /> Skip cache</label>
+      <label><input id="basemap" type="checkbox" checked /> Base map</label>
+      <label title="Show the load time and size on every tile"><input id="grid" type="checkbox" checked /> Per tile</label>
+      <button id="reset">Reset stats</button>
+      <a href="./">Viewer</a>
+    </div>
+    <div id="maps">
+      <div class="side">
+        <div id="map-left" class="map"></div>
+        <div class="stats" id="stats-left"></div>
+      </div>
+      <div class="side">
+        <div id="map-right" class="map"></div>
+        <div class="stats" id="stats-right"></div>
+      </div>
+    </div>
+    <script>
+      // Two synced maps. Each GPS tile is loaded with fetch(), so we can
+      // measure the load time and the size of every tile on both servers.
+      // Right: this stack's PNG tiles (same origin behind Traefik, port
+      // 8080 on the dev ports).
+      var dev = location.port === "8090";
+      document.getElementById("right-url").value =
+        (dev ? location.protocol + "//" + location.hostname + ":8080" : location.origin) + "/lines/{z}/{x}/{y}.png";
+      // A tile slower than this gets a red label.
+      var SLOW_MS = 500;
+
+      var sides = {
+        left: { name: "Left", times: [], bytes: 0, empty: 0, errors: 0 },
+        right: { name: "Right", times: [], bytes: 0, empty: 0, errors: 0 }
+      };
+
+      // A tile under this size is a transparent tile with no traces.
+      var EMPTY_BYTES = 1000;
+
+      var MeasuredLayer = L.GridLayer.extend({
+        initialize: function (side, options) {
+          this.side = side;
+          L.setOptions(this, options);
+        },
+        createTile: function (coords, done) {
+          var tile = document.createElement("div");
+          tile.className = "tile";
+          var img = document.createElement("img");
+          var label = document.createElement("div");
+          label.className = "label";
+          tile.appendChild(img);
+          tile.appendChild(label);
+          var side = sides[this.side];
+          var url = L.Util.template(document.getElementById(this.side + "-url").value,
+            { z: coords.z, x: coords.x, y: coords.y });
+          if (document.getElementById("nocache").checked) {
+            url += (url.indexOf("?") < 0 ? "?" : "&") + "nocache=" + Math.random().toString(36).slice(2);
+          }
+          var start = performance.now();
+          fetch(url, { cache: "no-store" })
+            .then(function (r) {
+              if (!r.ok) throw new Error(r.status);
+              return r.blob();
+            })
+            .then(function (blob) {
+              var ms = performance.now() - start;
+              side.times.push(ms);
+              side.bytes += blob.size;
+              if (blob.size < EMPTY_BYTES) side.empty++;
+              label.textContent = ms.toFixed(0) + " ms · " + (blob.size / 1024).toFixed(1) + " KB";
+              if (ms > SLOW_MS) label.className += " slow";
+              img.onload = function () { URL.revokeObjectURL(img.src); done(null, tile); };
+              img.src = URL.createObjectURL(blob);
+              showStats();
+            })
+            .catch(function (err) {
+              side.errors++;
+              label.textContent = "error " + err.message;
+              label.className += " slow";
+              showStats();
+              done(err, tile);
+            });
+          return tile;
+        }
+      });
+
+      function makeMap(id, side) {
+        var map = L.map(id, { zoomControl: side === "left" });
+        var base = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          maxZoom: 19, opacity: 0.3,
+          attribution: "© <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors"
+        }).addTo(map);
+        var gps = new MeasuredLayer(side, { maxZoom: 18, tileSize: 256 }).addTo(map);
+        return { map: map, base: base, gps: gps };
+      }
+
+      var left = makeMap("map-left", "left");
+      var right = makeMap("map-right", "right");
+      function setGrid(on) {
+        document.body.classList.toggle("grid", on);
+        document.querySelectorAll(".tile .label").forEach(function (el) { el.style.display = on ? "" : "none"; });
+      }
+      document.getElementById("grid").addEventListener("change", function (e) { setGrid(e.target.checked); });
+
+      // Keep both maps on the same view.
+      var syncing = false;
+      function sync(from, to) {
+        from.map.on("move", function () {
+          if (syncing) return;
+          syncing = true;
+          to.map.setView(from.map.getCenter(), from.map.getZoom(), { animate: false });
+          syncing = false;
+        });
+      }
+      sync(left, right);
+      sync(right, left);
+
+      // #map=zoom/lat/lon like openstreetmap.org
+      function readHash() {
+        var m = location.hash.match(/^#map=(\d+)\/(-?[\d.]+)\/(-?[\d.]+)/);
+        if (!m) return false;
+        left.map.setView([parseFloat(m[2]), parseFloat(m[3])], parseInt(m[1], 10));
+        return true;
+      }
+      if (!readHash()) left.map.setView([47.37, 8.54], 12);
+      left.map.on("moveend", function () {
+        var c = left.map.getCenter();
+        history.replaceState(null, "", "#map=" + left.map.getZoom() + "/" + c.lat.toFixed(4) + "/" + c.lng.toFixed(4));
+      });
+
+      function percentile(list, p) {
+        if (!list.length) return 0;
+        var s = list.slice().sort(function (a, b) { return a - b; });
+        return s[Math.min(s.length - 1, Math.floor(p / 100 * s.length))];
+      }
+
+      function summary(s) {
+        var n = s.times.length;
+        return {
+          tiles: n,
+          empty: s.empty,
+          errors: s.errors,
+          totalKB: s.bytes / 1024,
+          avgKB: n ? s.bytes / 1024 / n : 0,
+          avgMs: n ? s.times.reduce(function (a, b) { return a + b; }, 0) / n : 0,
+          p50Ms: percentile(s.times, 50),
+          p95Ms: percentile(s.times, 95)
+        };
+      }
+
+      // Rows: label, key, format, lower is better
+      var ROWS = [
+        ["Tiles loaded", "tiles", function (v) { return v; }, null],
+        ["Empty tiles", "empty", function (v) { return v; }, null],
+        ["Errors", "errors", function (v) { return v; }, true],
+        ["Total size", "totalKB", function (v) { return v.toFixed(0) + " KB"; }, true],
+        ["Average size", "avgKB", function (v) { return v.toFixed(1) + " KB"; }, true],
+        ["Average time", "avgMs", function (v) { return v.toFixed(0) + " ms"; }, true],
+        ["Median time (p50)", "p50Ms", function (v) { return v.toFixed(0) + " ms"; }, true],
+        ["Slow tiles (p95)", "p95Ms", function (v) { return v.toFixed(0) + " ms"; }, true]
+      ];
+
+      var pending = false;
+      function showStats() {
+        if (pending) return;
+        pending = true;
+        requestAnimationFrame(function () {
+          pending = false;
+          var a = summary(sides.left), b = summary(sides.right);
+          ["left", "right"].forEach(function (key) {
+            var me = key === "left" ? a : b, other = key === "left" ? b : a;
+            var host = document.getElementById(key + "-url").value.replace(/^https?:\/\//, "").split("/")[0];
+            var html = "<h3>" + sides[key].name + ": " + host + "</h3><table>";
+            ROWS.forEach(function (r) {
+              var v = me[r[1]], cls = "";
+              if (r[3] && me.tiles && other.tiles && v < other[r[1]]) cls = " class=\"win\"";
+              html += "<tr><td>" + r[0] + "</td><td" + cls + ">" + r[2](v) + "</td></tr>";
+            });
+            document.getElementById("stats-" + key).innerHTML = html + "</table>";
+          });
+        });
+      }
+      showStats();
+
+      function resetStats() {
+        ["left", "right"].forEach(function (k) {
+          sides[k].times = []; sides[k].bytes = 0; sides[k].empty = 0; sides[k].errors = 0;
+        });
+        showStats();
+      }
+      document.getElementById("reset").addEventListener("click", function () {
+        resetStats();
+        left.gps.redraw();
+        right.gps.redraw();
+      });
+      ["left", "right"].forEach(function (k) {
+        document.getElementById(k + "-url").addEventListener("change", function () {
+          resetStats();
+          (k === "left" ? left : right).gps.redraw();
+        });
+      });
+      document.getElementById("basemap").addEventListener("change", function (e) {
+        [left, right].forEach(function (m) {
+          e.target.checked ? m.base.addTo(m.map) : m.map.removeLayer(m.base);
+        });
+      });
+
+    </script>
+  </body>
+</html>
