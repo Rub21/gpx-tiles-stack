@@ -26,8 +26,8 @@ GPX_NS = "{http://www.topografix.com/GPX/1/0}"
 
 
 def read_metadata(f):
-    """Return {id: (description, tags)} of the identifiable traces, and the
-    dump timestamp."""
+    """Return {id: (timestamp, description, tags)} of the identifiable
+    traces, and the dump timestamp."""
     traces = {}
     stamp = None
     for event, el in ET.iterparse(f, events=("start", "end")):
@@ -37,7 +37,7 @@ def read_metadata(f):
             if el.get("visibility") == "identifiable":
                 desc = el.findtext("description") or ""
                 tags = [t.text for t in el.iter("tag") if t.text]
-                traces[int(el.get("id"))] = (desc, tags)
+                traces[int(el.get("id"))] = (el.get("timestamp"), desc, tags)
             el.clear()
     return traces, stamp
 
@@ -54,11 +54,13 @@ def read_points(f):
     return [s for s in segs if s]
 
 
-def write_trace(out, gpx_id, name, desc, tags, segs):
+def write_trace(out, gpx_id, name, stamp, desc, tags, segs):
     out.write(" <trk>\n")
     out.write("  <name>%s</name>\n" % escape(name))
     out.write("  <desc>%s</desc>\n" % escape(desc))
     out.write("  <osm:id>%d</osm:id>\n" % gpx_id)
+    # upload time, like <osm:timestamp> of planet-dump-ng
+    out.write("  <osm:timestamp>%s</osm:timestamp>\n" % escape(stamp))
     for t in tags:
         out.write("  <osm:tag>%s</osm:tag>\n" % escape(t))
     for seg in segs:
@@ -104,8 +106,8 @@ def main():
         if not segs:
             skipped += 1
             continue
-        desc, tags = traces[gpx_id]
-        write_trace(out, gpx_id, parts[-1], desc, tags, segs)
+        stamp, desc, tags = traces[gpx_id]
+        write_trace(out, gpx_id, parts[-1], stamp, desc, tags, segs)
         written += 1
         if written % 1000 == 0:
             print("%d traces written" % written, file=sys.stderr)
