@@ -15,6 +15,7 @@
   }
   #panel label { margin-right: 10px; }
   #panel a { color: #06c; }
+  #panel button { margin-right: 4px; }
   #panel form { margin-top: 6px; }
   #panel input[type=number] { width: 110px; }
   #trace-info { margin-top: 4px; color: #333; }
@@ -26,7 +27,8 @@
 <div id="panel">
   <label><input type="radio" name="layer" value="png" checked> PNG</label>
   <label><input type="radio" name="layer" value="vector"> Vector (Tilekiln)</label>
-  <a href="compare.html">Compare with gps-tile.openstreetmap.org</a>
+  <button type="button" id="go-compare" title="Our PNG tiles next to gps-tile.openstreetmap.org, with the load time and size of each tile">Compare PNG with osm.org</button>
+  <button type="button" id="go-vector" title="Vector tiles with a grid: size, load time, objects and points of each tile">Inspect vector tiles</button>
   <form id="trace-form" title="Draw the lines gpxtiler loaded for a trace over the tiles">
     <label>Trace id <input id="trace-id" type="number" min="1" placeholder="12504140"></label>
     <button type="submit">Show</button>
@@ -98,6 +100,17 @@ const map = new maplibregl.Map({
   },
 });
 map.addControl(new maplibregl.NavigationControl(), "top-right");
+
+// Open the compare page and the vector inspector at the same place.
+// compare.html (Leaflet) reads #map=zoom/lat/lon with a whole zoom;
+// vector.html (MapLibre) reads the same hash as this page.
+document.getElementById("go-compare").addEventListener("click", () => {
+  const c = map.getCenter();
+  location.href = `compare.html#map=${Math.round(map.getZoom())}/${c.lat.toFixed(5)}/${c.lng.toFixed(5)}`;
+});
+document.getElementById("go-vector").addEventListener("click", () => {
+  location.href = "vector.html" + location.hash;
+});
 
 document.querySelectorAll("input[name=layer]").forEach((el) => el.addEventListener("change", () => {
   const vector = el.value === "vector";

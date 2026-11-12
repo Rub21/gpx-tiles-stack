@@ -45,7 +45,7 @@
       <label><input id="basemap" type="checkbox" checked /> Base map</label>
       <label title="Show the load time and size on every tile"><input id="grid" type="checkbox" checked /> Per tile</label>
       <button id="reset">Reset stats</button>
-      <a href="./">Viewer</a>
+      <a id="viewer-link" href="./">Viewer</a>
     </div>
     <div id="maps">
       <div class="side">
@@ -166,6 +166,8 @@
       left.map.on("moveend", function () {
         var c = left.map.getCenter();
         history.replaceState(null, "", "#map=" + left.map.getZoom() + "/" + c.lat.toFixed(4) + "/" + c.lng.toFixed(4));
+        // The viewer (MapLibre) reads #zoom/lat/lon.
+        document.getElementById("viewer-link").href = "./#" + left.map.getZoom() + "/" + c.lat.toFixed(4) + "/" + c.lng.toFixed(4);
       });
 
       function percentile(list, p) {

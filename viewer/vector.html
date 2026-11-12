@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPS vector tiles inspector</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<style>
+  html, body, #map { height: 100%; margin: 0; }
+  body { background: #000; font: 13px system-ui, sans-serif; }
+  /* A canvas takes its size from its width attribute unless CSS sets it. */
+  #grid { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; }
+  #panel {
+    position: absolute; top: 10px; left: 10px; z-index: 2; max-width: 360px;
+    background: #fff; padding: 6px 10px; border-radius: 4px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .3);
+  }
+  #panel a { color: #06c; }
+  #panel .row { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
+  #panel table { border-collapse: collapse; margin-top: 6px; width: 100%; }
+  #panel td { padding: 1px 4px; }
+  #panel td:nth-child(2) { text-align: right; font-variant-numeric: tabular-nums; }
+  .legend span { display: inline-block; width: 10px; height: 10px; margin-right: 3px; vertical-align: -1px; }
+  .note { color: #555; margin-top: 4px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<canvas id="grid"></canvas>
+<div id="panel">
+  <div class="row">
+    <b>Vector tiles</b>
+    <label title="Ask the browser not to use its cache, so every tile is loaded from the server again">
+      <input type="checkbox" id="nocache" checked> Skip browser cache</label>
+    <label><input type="checkbox" id="show-grid" checked> Grid</label>
+    <button id="reset">Reload</button>
+    <a id="back" href="./">Viewer</a>
+  </div>
+  <div class="row legend" style="margin-top:4px">
+    <span style="background:#2a2"></span>&lt; 100 kB
+    <span style="background:#e90"></span>&lt; 500 kB
+    <span style="background:#d22"></span>500 kB or more
+  </div>
+  <table id="stats"></table>
+  <div class="note">Per tile: z/x/y, size (raw / gzip on the wire), load time, objects (features) and points. Time includes Tilekiln drawing the tile when it is not stored yet.</div>
+</div>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script>
+// Vector tile inspector. Every tile goes through the "meas://" protocol,
+// which loads it with fetch() and measures it: time, size, and the number
+// of features and points (read from the MVT protobuf). The grid draws the
+// tiles of the current zoom with their numbers.
+const params = new URLSearchParams(location.search);
+const dev = location.port === "8090";
+const host = location.protocol + "//" + location.hostname;
+const vectorURL = params.get("vt") || (dev ? host + ":8081" : location.origin) + "/gps/tilejson.json";
+
+const measured = new Map(); // "z/x/y" -> {z, x, y, ms, raw, gzip, features, points, error}
+const pending = new Set();  // "z/x/y" being loaded
+const nocache = document.getElementById("nocache");
+
+// --- MVT reading: only what we need (features and points per tile) ---
+function varint(buf, pos) {
+  let v = 0, shift = 0, b;
+  do { b = buf[pos++]; v += (b & 0x7f) * 2 ** shift; shift += 7; } while (b >= 0x80);
+  return [v, pos];
+}
+function skip(buf, pos, wt) {
+  if (wt === 0) return varint(buf, pos)[1];
+  if (wt === 1) return pos + 8;
+  if (wt === 5) return pos + 4;
+  const [len, p] = varint(buf, pos);
+  return p + len;
+}
+// Points of a feature geometry: MoveTo and LineTo commands carry points.
+function geometryPoints(buf, start, end) {
+  let pos = start, points = 0;
+  while (pos < end) {
+    let v; [v, pos] = varint(buf, pos);
+    const cmd = v & 7, count = Math.floor(v / 8);
+    if (cmd === 1 || cmd === 2) {
+      points += count;
+      for (let i = 0; i < count * 2; i++) pos = varint(buf, pos)[1];
+    }
+  }
+  return points;
+}
+function countMVT(buf) {
+  let pos = 0, features = 0, points = 0;
+  while (pos < buf.length) {
+    let key; [key, pos] = varint(buf, pos);
+    const field = Math.floor(key / 8), wt = key & 7;
+    if (field === 3 && wt === 2) {                 // layer
+      let len; [len, pos] = varint(buf, pos);
+      const lend = pos + len;
+      let lp = pos;
+      while (lp < lend) {
+        let lk; [lk, lp] = varint(buf, lp);
+        const lf = Math.floor(lk / 8), lwt = lk & 7;
+        if (lf === 2 && lwt === 2) {               // feature
+          let flen; [flen, lp] = varint(buf, lp);
+          const fend = lp + flen;
+          features++;
+          let fp = lp;
+          while (fp < fend) {
+            let fk; [fk, fp] = varint(buf, fp);
+            const ff = Math.floor(fk / 8), fwt = fk & 7;
+            if (ff === 4 && fwt === 2) {           // geometry
+              let glen; [glen, fp] = varint(buf, fp);
+              points += geometryPoints(buf, fp, fp + glen);
+              fp += glen;
+            } else fp = skip(buf, fp, fwt);
+          }
+          lp = fend;
+        } else lp = skip(buf, lp, lwt);
+      }
+      pos = lend;
+    } else pos = skip(buf, pos, wt);
+  }
+  return { features, points };
+}
+
+// --- the protocol: meas://<real url> ---
+maplibregl.addProtocol("meas", async (req, abort) => {
+  const url = req.url.slice("meas://".length);
+  const m = url.match(/\/(\d+)\/(\d+)\/(\d+)\.mvt/);
+  const key = m ? `${m[1]}/${m[2]}/${m[3]}` : url;
+  pending.add(key);
+  const t0 = performance.now();
+  try {
+    const r = await fetch(url, { signal: abort.signal, cache: nocache.checked ? "no-store" : "default" });
+    const data = await r.arrayBuffer();
+    const ms = performance.now() - t0;
+    const entries = performance.getEntriesByName(r.url || url);
+    const last = entries[entries.length - 1];
+    const gzip = last && last.encodedBodySize ? last.encodedBodySize : null;
+    const counts = r.ok ? countMVT(new Uint8Array(data)) : { features: 0, points: 0 };
+    if (m) measured.set(key, { z: +m[1], x: +m[2], y: +m[3], ms, raw: data.byteLength, gzip, ...counts, error: r.ok ? null : r.status });
+    return { data: r.ok ? data : new ArrayBuffer(0) };
+  } catch (e) {
+    if (m && e.name !== "AbortError") measured.set(key, { z: +m[1], x: +m[2], y: +m[3], error: "failed" });
+    throw e;
+  } finally {
+    pending.delete(key);
+    redraw();
+  }
+});
+
+// Same colors as the viewer: direction of travel, the datamaps formula.
+function color(a) {
+  const h = -(a + 0.5);
+  const c = (k) => Math.round(255 * Math.sin(Math.PI * (h + k)) ** 2);
+  return `rgb(${c(0)}, ${c(1 / 3)}, ${c(2 / 3)})`;
+}
+const lineColor = ["match", ["get", "dir"]];
+for (let d = 0; d < 32; d++) lineColor.push(d, color((d + 0.5) / 32));
+lineColor.push("#808080");
+
+let map;
+fetch(vectorURL).then((r) => r.json()).then((tj) => {
+  // new URL() encodes {z} as %7Bz%7D: put the braces back.
+  const tiles = tj.tiles.map((t) => "meas://" + new URL(t, vectorURL).href.replace(/%7B/gi, "{").replace(/%7D/gi, "}"));
+  map = new maplibregl.Map({
+    container: "map",
+    hash: true,
+    center: [0, 30],
+    zoom: 3,
+    maxZoom: 20,
+    style: {
+      version: 8,
+      sources: {
+        osm: {
+          type: "raster", tileSize: 256, maxzoom: 19,
+          tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+          attribution: "&copy; OpenStreetMap contributors",
+        },
+        vector: { type: "vector", tiles, minzoom: tj.minzoom || 0, maxzoom: tj.maxzoom || 20 },
+      },
+      layers: [
+        { id: "background", type: "background", paint: { "background-color": "#000" } },
+        { id: "osm", type: "raster", source: "osm", paint: { "raster-opacity": 0.2 } },
+        {
+          id: "vector", type: "line", source: "vector", "source-layer": "traces",
+          layout: { "line-cap": "round", "line-join": "round" },
+          paint: { "line-color": lineColor, "line-width": 1.2, "line-opacity": ["/", ["get", "fade"], 10] },
+        },
+      ],
+    },
+  });
+  map.addControl(new maplibregl.NavigationControl(), "top-right");
+  map.on("render", redraw);
+  map.on("moveend", updateBack);
+  map.on("load", updateBack);
+  document.getElementById("reset").addEventListener("click", () => {
+    measured.clear();
+    map.getSource("vector").setTiles(tiles);
+    redraw();
+  });
+  nocache.addEventListener("change", () => document.getElementById("reset").click());
+}).catch((e) => {
+  document.getElementById("stats").innerHTML = `<tr><td>Could not load ${vectorURL}: ${e}</td></tr>`;
+});
+
+// Keep the position when going back to the viewer.
+function updateBack() {
+  document.getElementById("back").href = "./" + location.hash;
+}
+
+// --- grid ---
+const canvas = document.getElementById("grid");
+const ctx = canvas.getContext("2d");
+const showGrid = document.getElementById("show-grid");
+showGrid.addEventListener("change", redraw);
+let queued = false;
+function redraw() {
+  if (queued) return;
+  queued = true;
+  requestAnimationFrame(() => { queued = false; draw(); stats(); });
+}
+function tileLngLat(x, y, z) {
+  const n = Math.PI - 2 * Math.PI * y / 2 ** z;
+  return [x / 2 ** z * 360 - 180, 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)))];
+}
+function kb(b) { return b == null ? "?" : b < 1024 ? b + " B" : (b / 1024).toFixed(b < 10240 ? 1 : 0) + " kB"; }
+function sizeColor(b) { return b < 100 * 1024 ? "#2a2" : b < 500 * 1024 ? "#e90" : "#d22"; }
+// Vector tiles are 512 px: the map at zoom z shows the tiles of zoom floor(z).
+function currentZ() { return map ? Math.max(0, Math.min(20, Math.floor(map.getZoom()))) : 0; }
+
+function draw() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== Math.round(w * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  if (!map || !showGrid.checked) return;
+  const z = currentZ();
+  const b = map.getBounds();
+  const n = 2 ** z;
+  const lon2x = (lon) => Math.floor((lon + 180) / 360 * n);
+  const lat2y = (lat) => Math.floor((1 - Math.log(Math.tan(lat * Math.PI / 180) + 1 / Math.cos(lat * Math.PI / 180)) / Math.PI) / 2 * n);
+  const x0 = Math.max(0, lon2x(b.getWest())), x1 = Math.min(n - 1, lon2x(b.getEast()));
+  const y0 = Math.max(0, lat2y(Math.min(85.05, b.getNorth()))), y1 = Math.min(n - 1, lat2y(Math.max(-85.05, b.getSouth())));
+  if ((x1 - x0 + 1) * (y1 - y0 + 1) > 400) return; // too many tiles to label
+  ctx.font = "11px ui-monospace, Menlo, monospace";
+  ctx.textBaseline = "top";
+  for (let x = x0; x <= x1; x++) {
+    for (let y = y0; y <= y1; y++) {
+      const a = map.project(tileLngLat(x, y, z));
+      const c = map.project(tileLngLat(x + 1, y + 1, z));
+      const key = `${z}/${x}/${y}`;
+      const t = measured.get(key);
+      ctx.strokeStyle = t && !t.error ? sizeColor(t.raw) : "rgba(255,255,255,.5)";
+      ctx.lineWidth = t && !t.error ? 2 : 1;
+      ctx.strokeRect(a.x + 1, a.y + 1, c.x - a.x - 2, c.y - a.y - 2);
+      const lines = [key];
+      if (t && t.error) lines.push(`error ${t.error}`);
+      else if (t) lines.push(`${kb(t.raw)} / gz ${kb(t.gzip)}`, `${Math.round(t.ms)} ms`, `${t.features} obj · ${t.points.toLocaleString()} pts`);
+      else if (pending.has(key)) lines.push("loading…");
+      const bw = Math.max(...lines.map((l) => ctx.measureText(l).width)) + 8;
+      ctx.fillStyle = "rgba(0,0,0,.7)";
+      ctx.fillRect(a.x + 3, a.y + 3, bw, lines.length * 13 + 4);
+      ctx.fillStyle = t && !t.error ? sizeColor(t.raw) : "#fff";
+      ctx.fillText(lines[0], a.x + 7, a.y + 5);
+      ctx.fillStyle = "#fff";
+      lines.slice(1).forEach((l, i) => ctx.fillText(l, a.x + 7, a.y + 5 + (i + 1) * 13));
+    }
+  }
+}
+window.addEventListener("resize", redraw);
+
+// --- summary of the tiles of the current zoom loaded so far ---
+function pct(arr, p) {
+  if (!arr.length) return 0;
+  const s = [...arr].sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.floor(p * s.length))];
+}
+function stats() {
+  const z = currentZ();
+  const ts = [...measured.values()].filter((t) => t.z === z && !t.error);
+  const errors = [...measured.values()].filter((t) => t.z === z && t.error).length;
+  const raw = ts.map((t) => t.raw), ms = ts.map((t) => t.ms);
+  const sum = (a) => a.reduce((s, v) => s + v, 0);
+  const gz = ts.filter((t) => t.gzip != null).map((t) => t.gzip);
+  const rows = [
+    ["Zoom of the tiles", z],
+    ["Tiles loaded", ts.length + (pending.size ? ` (+${pending.size} loading)` : "")],
+    ["Errors", errors],
+    ["Total size (raw / gzip)", `${kb(sum(raw))} / ${gz.length ? kb(sum(gz)) : "?"}`],
+    ["Average / largest tile", `${kb(Math.round(sum(raw) / (ts.length || 1)))} / ${kb(Math.max(0, ...raw))}`],
+    ["Load time median / p95 / max", `${Math.round(pct(ms, 0.5))} / ${Math.round(pct(ms, 0.95))} / ${Math.round(Math.max(0, ...ms))} ms`],
+    ["Objects (all / largest tile)", `${sum(ts.map((t) => t.features)).toLocaleString()} / ${Math.max(0, ...ts.map((t) => t.features)).toLocaleString()}`],
+    ["Points (all / largest tile)", `${sum(ts.map((t) => t.points)).toLocaleString()} / ${Math.max(0, ...ts.map((t) => t.points)).toLocaleString()}`],
+  ];
+  document.getElementById("stats").innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join("");
+}
+</script>
+</body>
+</html>
