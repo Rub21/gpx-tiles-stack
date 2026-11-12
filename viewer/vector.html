@@ -58,6 +58,11 @@ const vectorURL = params.get("vt") || (dev ? host + ":8081" : location.origin) +
 const measured = new Map(); // "z/x/y" -> {z, x, y, ms, raw, gzip, features, points, error}
 const pending = new Set();  // "z/x/y" being loaded
 const nocache = document.getElementById("nocache");
+// The gzip size comes from the browser's resource timing list, which keeps
+// only 250 requests by default (base map tiles too). Keep many more, and
+// start again when it is full, or new tiles show "gz ?".
+try { performance.setResourceTimingBufferSize(100000); } catch (e) { /* old browser */ }
+performance.addEventListener?.("resourcetimingbufferfull", () => performance.clearResourceTimings());
 
 // --- MVT reading: only what we need (features and points per tile) ---
 function varint(buf, pos) {
