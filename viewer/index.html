@@ -61,6 +61,7 @@ const lineColor = ["match", ["get", "dir"]];
 for (let d = 0; d < 32; d++) lineColor.push(d, color((d + 0.5) / 32));
 lineColor.push("#808080");
 
+const modes = ["walk", "bike", "vehicle", "plane", "unknown"];
 const map = new maplibregl.Map({
   container: "map",
   hash: true,
@@ -86,8 +87,9 @@ const map = new maplibregl.Map({
       { id: "background", type: "background", paint: { "background-color": "#000" } },
       { id: "osm", type: "raster", source: "osm", paint: { "raster-opacity": 0.2 } },
       { id: "traces", type: "raster", source: "traces" },
-      {
-        id: "vector", type: "line", source: "vector", "source-layer": "traces",
+      // One layer per transport mode in the tile, same style for all.
+      ...modes.map((mode) => ({
+        id: "vector-" + mode, type: "line", source: "vector", "source-layer": mode,
         layout: { visibility: "none", "line-cap": "round", "line-join": "round" },
         paint: {
           "line-color": lineColor,
@@ -95,7 +97,7 @@ const map = new maplibregl.Map({
           // fade 1-10 dims long edges (GPS jumps), like datamaps -g.
           "line-opacity": ["/", ["get", "fade"], 10],
         },
-      },
+      })),
     ],
   },
 });
@@ -115,7 +117,9 @@ document.getElementById("go-vector").addEventListener("click", () => {
 document.querySelectorAll("input[name=layer]").forEach((el) => el.addEventListener("change", () => {
   const vector = el.value === "vector";
   map.setLayoutProperty("traces", "visibility", vector ? "none" : "visible");
-  map.setLayoutProperty("vector", "visibility", vector ? "visible" : "none");
+  for (const mode of modes) {
+    map.setLayoutProperty("vector-" + mode, "visibility", vector ? "visible" : "none");
+  }
 }));
 
 // Show a trace: /traces/{id} of gpxtiler returns the lines it loaded as
