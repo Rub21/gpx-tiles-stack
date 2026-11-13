@@ -27,7 +27,7 @@
 <div id="panel">
   <label><input type="radio" name="layer" value="png" checked> PNG</label>
   <label><input type="radio" name="layer" value="vector"> Vector (Tilekiln)</label>
-  <span id="modes" title="From zoom 10 each vector tile has one layer per transport mode: show or hide them. Up to zoom 9 the tile has traces (every mode but plane) and plane" hidden>
+  <span id="modes" title="Each vector tile has one layer per transport mode: show or hide them" hidden>
     <label><input type="checkbox" data-mode="walk" checked> walk</label>
     <label><input type="checkbox" data-mode="bike" checked> bike</label>
     <label><input type="checkbox" data-mode="vehicle" checked> vehicle</label>
@@ -94,10 +94,8 @@ const map = new maplibregl.Map({
       { id: "background", type: "background", paint: { "background-color": "#000" } },
       { id: "osm", type: "raster", source: "osm", paint: { "raster-opacity": 0.2 } },
       { id: "traces", type: "raster", source: "traces" },
-      // Zoom 0-9: the layers traces and plane; zoom 10+: one layer per mode.
-      // Same style for all. The source-layer picks what each tile has, so
-      // every layer can cover every zoom.
-      ...["traces", ...modes].map((mode) => ({
+      // One layer per transport mode, same style for all.
+      ...modes.map((mode) => ({
         id: "vector-" + mode, type: "line", source: "vector", "source-layer": mode,
         layout: { visibility: "none", "line-cap": "round", "line-join": "round" },
         paint: {
@@ -129,7 +127,6 @@ function showLayers() {
   const vector = document.querySelector("input[name=layer]:checked").value === "vector";
   map.setLayoutProperty("traces", "visibility", vector ? "none" : "visible");
   document.getElementById("modes").hidden = !vector;
-  map.setLayoutProperty("vector-traces", "visibility", vector ? "visible" : "none");
   modeBoxes.forEach((box) => {
     map.setLayoutProperty("vector-" + box.dataset.mode, "visibility", vector && box.checked ? "visible" : "none");
   });

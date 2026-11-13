@@ -184,8 +184,8 @@ fetch(vectorURL).then((r) => r.json()).then((tj) => {
       layers: [
         { id: "background", type: "background", paint: { "background-color": "#000" } },
         { id: "osm", type: "raster", source: "osm", paint: { "raster-opacity": 0.2 } },
-        // Zoom 0-9: traces and plane; zoom 10+: one layer per mode. Same style.
-        ...["traces", "walk", "bike", "vehicle", "plane", "unknown"].map((mode) => ({
+        // One layer per transport mode, same style for all.
+        ...["walk", "bike", "vehicle", "plane", "unknown"].map((mode) => ({
           id: "vector-" + mode, type: "line", source: "vector", "source-layer": mode,
           layout: { "line-cap": "round", "line-join": "round" },
           paint: { "line-color": lineColor, "line-width": 1.2, "line-opacity": ["/", ["get", "fade"], 10] },
