@@ -27,6 +27,13 @@
 <div id="panel">
   <label><input type="radio" name="layer" value="png" checked> PNG</label>
   <label><input type="radio" name="layer" value="vector"> Vector (Tilekiln)</label>
+  <span id="modes" title="One layer per transport mode in each vector tile: show or hide them" hidden>
+    <label><input type="checkbox" data-mode="walk" checked> walk</label>
+    <label><input type="checkbox" data-mode="bike" checked> bike</label>
+    <label><input type="checkbox" data-mode="vehicle" checked> vehicle</label>
+    <label><input type="checkbox" data-mode="plane" checked> plane</label>
+    <label><input type="checkbox" data-mode="unknown" checked> unknown</label>
+  </span>
   <button type="button" id="go-compare" title="Our PNG tiles next to gps-tile.openstreetmap.org, with the load time and size of each tile">Compare PNG with osm.org</button>
   <button type="button" id="go-vector" title="Vector tiles with a grid: size, load time, objects and points of each tile">Inspect vector tiles</button>
   <form id="trace-form" title="Draw the lines gpxtiler loaded for a trace over the tiles">
@@ -114,13 +121,18 @@ document.getElementById("go-vector").addEventListener("click", () => {
   location.href = "vector.html" + location.hash;
 });
 
-document.querySelectorAll("input[name=layer]").forEach((el) => el.addEventListener("change", () => {
-  const vector = el.value === "vector";
+// A mode layer is shown when the vector tiles are selected and its box is checked.
+const modeBoxes = document.querySelectorAll("#modes input");
+function showLayers() {
+  const vector = document.querySelector("input[name=layer]:checked").value === "vector";
   map.setLayoutProperty("traces", "visibility", vector ? "none" : "visible");
-  for (const mode of modes) {
-    map.setLayoutProperty("vector-" + mode, "visibility", vector ? "visible" : "none");
-  }
-}));
+  document.getElementById("modes").hidden = !vector;
+  modeBoxes.forEach((box) => {
+    map.setLayoutProperty("vector-" + box.dataset.mode, "visibility", vector && box.checked ? "visible" : "none");
+  });
+}
+document.querySelectorAll("input[name=layer]").forEach((el) => el.addEventListener("change", showLayers));
+modeBoxes.forEach((box) => box.addEventListener("change", showLayers));
 
 // Show a trace: /traces/{id} of gpxtiler returns the lines it loaded as
 // GeoJSON; they are drawn in white over the tiles, so you can check that
